@@ -24,7 +24,7 @@ export default function Legend() {
         </div>
       ))}
       <div className="mt-2 border-t border-white/15 pt-1.5 text-white/60">
-        <div className="py-0.5">➤ arrow = direction of travel</div>
+        <div className="py-0.5">🚌 icon points direction of travel</div>
         <div className="py-0.5">◎ pulse = tram due at stop</div>
       </div>
     </div>

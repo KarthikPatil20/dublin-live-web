@@ -167,12 +167,12 @@ export default function LiveMap() {
         layout: {
           "icon-image": [
             "concat",
-            ["case", ["get", "hasBearing"], "arrow-", "dot-"],
+            ["case", ["get", "hasBearing"], "veh-", "dot-"],
             ["get", "routeType"],
           ],
           "icon-rotate": ["get", "bearing"],
           "icon-rotation-alignment": "map",
-          "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.42, 12, 0.62, 16, 1.0],
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.34, 12, 0.48, 16, 0.85],
           "icon-allow-overlap": true,
           "icon-ignore-placement": true,
         },
