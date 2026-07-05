@@ -6,11 +6,9 @@ import { useVehiclesStore } from "@/stores/useVehiclesStore";
 import { useFilterStore } from "@/stores/useFilterStore";
 import { DUBLIN_CENTER, DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM } from "@/lib/constants";
 import { ROUTE_COLORS } from "@/types/vehicle";
-import {
-  vehiclesToGeoJSON,
-  luasStopsToGeoJSON,
-  luasLinesGeoJSON,
-} from "./geojson";
+import { vehicleAnimator } from "@/lib/animation/vehicleAnimator";
+import { addVehicleIcons } from "@/lib/mapIcons";
+import { luasStopsToGeoJSON, luasLinesGeoJSON } from "./geojson";
 import FilterBar from "./FilterBar";
 import Legend from "./Legend";
 import VehicleSheet, { type SelectedVehicle } from "./VehicleSheet";
@@ -18,6 +16,9 @@ import VehicleSheet, { type SelectedVehicle } from "./VehicleSheet";
 const VEHICLE_SRC = "vehicles";
 const LUAS_STOP_SRC = "luas-stops";
 const LUAS_LINE_SRC = "luas-lines";
+
+const FRAME_MS = 33; // ~30fps — plenty for marker motion, kind to batteries
+const PULSE_MS = 1_600; // period of the "signal" pulse rings
 
 // Color match expression by routeType (falls back to bus green)
 const COLOR_EXPR: mapboxgl.Expression = [
@@ -31,11 +32,24 @@ const COLOR_EXPR: mapboxgl.Expression = [
   ROUTE_COLORS.unknown,
 ];
 
+const LUAS_LINE_COLOR: mapboxgl.Expression = [
+  "match",
+  ["get", "line"],
+  "red", ROUTE_COLORS.luasRed,
+  "green", ROUTE_COLORS.luasGreen,
+  "#888",
+];
+
 export default function LiveMap() {
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState<SelectedVehicle | null>(null);
+  const [follow, setFollow] = useState(false);
+
+  const selectedRef = useRef<SelectedVehicle | null>(null);
+  const followRef = useRef<{ id: string; since: number } | null>(null);
+  selectedRef.current = selected;
 
   const start = useVehiclesStore((s) => s.start);
   const stop = useVehiclesStore((s) => s.stop);
@@ -60,58 +74,110 @@ export default function LiveMap() {
     map.addControl(new mapboxgl.GeolocateControl({ trackUserLocation: true }), "top-left");
 
     map.on("load", () => {
-      // Luas lines (under everything)
+      addVehicleIcons(map);
+
+      // ---- Luas network (under everything) ----
       map.addSource(LUAS_LINE_SRC, { type: "geojson", data: luasLinesGeoJSON() });
+      map.addLayer({
+        id: "luas-line-casing",
+        type: "line",
+        source: LUAS_LINE_SRC,
+        paint: { "line-width": 6, "line-color": "#000000", "line-opacity": 0.35 },
+      });
       map.addLayer({
         id: "luas-line",
         type: "line",
         source: LUAS_LINE_SRC,
-        paint: {
-          "line-width": 3,
-          "line-color": [
-            "match",
-            ["get", "line"],
-            "red", ROUTE_COLORS.luasRed,
-            "green", ROUTE_COLORS.luasGreen,
-            "#888",
-          ],
-          "line-opacity": 0.85,
-        },
+        paint: { "line-width": 2.5, "line-color": LUAS_LINE_COLOR, "line-opacity": 0.9 },
       });
 
-      // Luas stops
       map.addSource(LUAS_STOP_SRC, { type: "geojson", data: emptyFC() });
+      // Pulsing "tram arriving" signal — animated in the frame loop below
+      map.addLayer({
+        id: "luas-stop-pulse",
+        type: "circle",
+        source: LUAS_STOP_SRC,
+        filter: ["==", ["get", "imminent"], true],
+        paint: {
+          "circle-radius": 6,
+          "circle-color": LUAS_LINE_COLOR,
+          "circle-opacity": 0.5,
+          "circle-stroke-width": 0,
+        },
+      });
       map.addLayer({
         id: "luas-stop",
         type: "circle",
         source: LUAS_STOP_SRC,
         paint: {
-          "circle-radius": 4,
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 14, 4.5],
           "circle-color": "#ffffff",
           "circle-stroke-width": 2,
-          "circle-stroke-color": [
-            "match",
-            ["get", "line"],
-            "red", ROUTE_COLORS.luasRed,
-            "green", ROUTE_COLORS.luasGreen,
-            "#888",
+          "circle-stroke-color": LUAS_LINE_COLOR,
+        },
+      });
+      map.addLayer({
+        id: "luas-stop-label",
+        type: "symbol",
+        source: LUAS_STOP_SRC,
+        minzoom: 13.5,
+        layout: {
+          "text-field": [
+            "case",
+            ["==", ["get", "dueLabel"], ""],
+            ["get", "name"],
+            ["concat", ["get", "name"], " · ", ["get", "dueLabel"]],
           ],
+          "text-size": 10,
+          "text-offset": [0, 1.1],
+          "text-anchor": "top",
+          "text-optional": true,
+        },
+        paint: {
+          "text-color": "#c9d1d9",
+          "text-halo-color": "#0D1117",
+          "text-halo-width": 1.2,
         },
       });
 
-      // Vehicles source + layers
+      // ---- Vehicles ----
       map.addSource(VEHICLE_SRC, { type: "geojson", data: emptyFC() });
+
+      // Pulse halo under the selected vehicle — animated in the frame loop
       map.addLayer({
-        id: "vehicle-dot",
+        id: "vehicle-pulse",
         type: "circle",
         source: VEHICLE_SRC,
+        filter: ["==", ["get", "vehicleId"], "__none__"],
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 7, 16, 9],
+          "circle-radius": 14,
           "circle-color": COLOR_EXPR,
-          "circle-stroke-width": 1.5,
-          "circle-stroke-color": "#ffffff",
+          "circle-opacity": 0.35,
+          "circle-stroke-width": 1,
+          "circle-stroke-color": COLOR_EXPR,
+          "circle-stroke-opacity": 0.4,
         },
       });
+
+      // Direction pucks: arrow when heading is known, dot otherwise.
+      map.addLayer({
+        id: "vehicle-icon",
+        type: "symbol",
+        source: VEHICLE_SRC,
+        layout: {
+          "icon-image": [
+            "concat",
+            ["case", ["get", "hasBearing"], "arrow-", "dot-"],
+            ["get", "routeType"],
+          ],
+          "icon-rotate": ["get", "bearing"],
+          "icon-rotation-alignment": "map",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.42, 12, 0.62, 16, 1.0],
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
+        },
+      });
+
       map.addLayer({
         id: "vehicle-label",
         type: "symbol",
@@ -120,18 +186,19 @@ export default function LiveMap() {
         layout: {
           "text-field": ["get", "label"],
           "text-size": 10,
-          "text-offset": [0, 1.2],
+          "text-offset": [0, 1.3],
           "text-anchor": "top",
+          "text-optional": true,
         },
         paint: {
           "text-color": "#E6EDF3",
           "text-halo-color": "#0D1117",
-          "text-halo-width": 1,
+          "text-halo-width": 1.2,
         },
       });
 
-      // interactions
-      map.on("click", "vehicle-dot", (e) => {
+      // ---- interactions ----
+      map.on("click", "vehicle-icon", (e) => {
         const f = e.features?.[0];
         if (!f) return;
         const p = f.properties as Record<string, string>;
@@ -145,13 +212,26 @@ export default function LiveMap() {
           lng,
         });
       });
-      map.on("mouseenter", "vehicle-dot", () => (map.getCanvas().style.cursor = "pointer"));
-      map.on("mouseleave", "vehicle-dot", () => (map.getCanvas().style.cursor = ""));
+      map.on("click", (e) => {
+        // tap on empty map closes the sheet
+        const hits = map.queryRenderedFeatures(e.point, { layers: ["vehicle-icon"] });
+        if (!hits.length) {
+          setSelected(null);
+          setFollow(false);
+        }
+      });
+      map.on("mouseenter", "vehicle-icon", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "vehicle-icon", () => (map.getCanvas().style.cursor = ""));
+      map.on("dragstart", () => setFollow(false)); // user takes the wheel back
 
       setReady(true);
     });
 
     mapRef.current = map;
+    if (process.env.NODE_ENV !== "production") {
+      // dev-only handle for debugging in the browser console
+      (window as unknown as Record<string, unknown>).__map = map;
+    }
     return () => {
       map.remove();
       mapRef.current = null;
@@ -164,51 +244,115 @@ export default function LiveMap() {
     return () => stop();
   }, [start, stop]);
 
-  // push vehicle + luas data to the map whenever the store changes
+  // feed poll results into the animator; luas stops go straight to their source
   useEffect(() => {
     if (!ready) return;
-    const unsub = useVehiclesStore.subscribe((state) => {
-      const map = mapRef.current;
-      if (!map) return;
-      const filtered = state.vehicles.filter((v) =>
-        useFilterStore.getState().isVisible(v.routeType),
+    const push = (vehicles: Parameters<typeof vehicleAnimator.setData>[0], luas: unknown) => {
+      vehicleAnimator.setData(vehicles);
+      (mapRef.current?.getSource(LUAS_STOP_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        luasStopsToGeoJSON(luas as Parameters<typeof luasStopsToGeoJSON>[0]),
       );
-      (map.getSource(VEHICLE_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-        vehiclesToGeoJSON(filtered),
-      );
-      (map.getSource(LUAS_STOP_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-        luasStopsToGeoJSON(state.luasStops),
-      );
-    });
-    // prime immediately
+    };
+    const unsub = useVehiclesStore.subscribe((s) => push(s.vehicles, s.luasStops));
     const st = useVehiclesStore.getState();
-    const map = mapRef.current!;
-    const filtered = st.vehicles.filter((v) => useFilterStore.getState().isVisible(v.routeType));
-    (map.getSource(VEHICLE_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-      vehiclesToGeoJSON(filtered),
-    );
-    (map.getSource(LUAS_STOP_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-      luasStopsToGeoJSON(st.luasStops),
-    );
+    push(st.vehicles, st.luasStops);
     return unsub;
   }, [ready]);
 
-  // re-apply filter instantly on toggle
+  // ---- the animation loop: interpolated positions + pulse signals ----
+  useEffect(() => {
+    if (!ready) return;
+    let raf = 0;
+    let lastFrame = 0;
+
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (document.hidden || now - lastFrame < FRAME_MS) return;
+      lastFrame = now;
+      const map = mapRef.current;
+      if (!map) return;
+
+      (map.getSource(VEHICLE_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        vehicleAnimator.frame(now),
+      );
+
+      // Shared pulse phase drives both "signal" layers.
+      const phase = (now % PULSE_MS) / PULSE_MS; // 0 → 1
+      if (map.getLayer("vehicle-pulse")) {
+        map.setPaintProperty("vehicle-pulse", "circle-radius", 12 + phase * 18);
+        map.setPaintProperty("vehicle-pulse", "circle-opacity", 0.4 * (1 - phase));
+        map.setPaintProperty("vehicle-pulse", "circle-stroke-opacity", 0.5 * (1 - phase));
+      }
+      if (map.getLayer("luas-stop-pulse")) {
+        map.setPaintProperty("luas-stop-pulse", "circle-radius", 5 + phase * 14);
+        map.setPaintProperty("luas-stop-pulse", "circle-opacity", 0.55 * (1 - phase));
+      }
+
+      // Follow mode: hard-center on the (already smooth) vehicle position.
+      const f = followRef.current;
+      if (f && now - f.since > 700) {
+        const snap = vehicleAnimator.getSnapshot(f.id);
+        if (snap) map.setCenter([snap.lng, snap.lat]);
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [ready]);
+
+  // selected vehicle: aim the pulse halo at it
+  useEffect(() => {
+    if (!ready) return;
+    const map = mapRef.current;
+    if (!map?.getLayer("vehicle-pulse")) return;
+    map.setFilter("vehicle-pulse", [
+      "==",
+      ["get", "vehicleId"],
+      selected?.vehicleId ?? "__none__",
+    ]);
+  }, [selected, ready]);
+
+  // follow toggle: ease to the vehicle, then the frame loop keeps centering
+  useEffect(() => {
+    if (!follow || !selected) {
+      followRef.current = null;
+      return;
+    }
+    followRef.current = { id: selected.vehicleId, since: performance.now() };
+    const map = mapRef.current;
+    const snap = vehicleAnimator.getSnapshot(selected.vehicleId);
+    if (map && snap) {
+      map.easeTo({
+        center: [snap.lng, snap.lat],
+        zoom: Math.max(map.getZoom(), 14.5),
+        duration: 600,
+      });
+    }
+  }, [follow, selected]);
+
+  // route-type filters applied directly on the layers (instant, no data rebuild)
   useEffect(() => {
     if (!ready) return;
     const map = mapRef.current;
     if (!map) return;
-    const st = useVehiclesStore.getState();
-    const filtered = st.vehicles.filter((v) => useFilterStore.getState().isVisible(v.routeType));
-    (map.getSource(VEHICLE_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-      vehiclesToGeoJSON(filtered),
-    );
-    // toggle luas line/stop visibility with the luas filters
-    const luasOn = enabled.luasRed || enabled.luasGreen;
-    ["luas-line", "luas-stop"].forEach((id) => {
-      if (map.getLayer(id))
-        map.setLayoutProperty(id, "visibility", luasOn ? "visible" : "none");
+    const visible = (Object.keys(enabled) as (keyof typeof enabled)[]).filter(
+      (k) => enabled[k],
+    ) as string[];
+    if (enabled.bus) visible.push("unknown");
+    const typeFilter: mapboxgl.Expression = [
+      "in",
+      ["get", "routeType"],
+      ["literal", visible],
+    ];
+    ["vehicle-icon", "vehicle-label"].forEach((id) => {
+      if (map.getLayer(id)) map.setFilter(id, typeFilter);
     });
+    const luasOn = enabled.luasRed || enabled.luasGreen;
+    ["luas-line-casing", "luas-line", "luas-stop", "luas-stop-pulse", "luas-stop-label"].forEach(
+      (id) => {
+        if (map.getLayer(id))
+          map.setLayoutProperty(id, "visibility", luasOn ? "visible" : "none");
+      },
+    );
   }, [enabled, ready]);
 
   const noToken = !process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
@@ -225,7 +369,17 @@ export default function LiveMap() {
       <FilterBar />
       <Legend />
       <StatusPill />
-      {selected && <VehicleSheet vehicle={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <VehicleSheet
+          vehicle={selected}
+          follow={follow}
+          onToggleFollow={() => setFollow((f) => !f)}
+          onClose={() => {
+            setSelected(null);
+            setFollow(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -233,11 +387,26 @@ export default function LiveMap() {
 function StatusPill() {
   const lastUpdated = useVehiclesStore((s) => s.lastUpdated);
   const count = useVehiclesStore((s) => s.vehicles.length);
+  const error = useVehiclesStore((s) => s.error);
+  const [, forceTick] = useState(0);
+
+  // tick every second so "Xs ago" stays live
+  useEffect(() => {
+    const t = setInterval(() => forceTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const ago = lastUpdated ? Math.max(0, Math.round((Date.now() - lastUpdated) / 1000)) : null;
   return (
     <div className="pointer-events-none absolute bottom-3 right-3 rounded-full bg-black/60 px-3 py-1.5 text-xs text-white backdrop-blur">
-      <span className="mr-1 inline-block h-2 w-2 animate-pulse rounded-full bg-green-400" />
+      <span
+        className={`mr-1.5 inline-block h-2 w-2 animate-pulse rounded-full ${
+          error ? "bg-amber-400" : "bg-green-400"
+        }`}
+      />
       {count} live vehicles
-      {lastUpdated ? ` · ${new Date(lastUpdated).toLocaleTimeString()}` : " · loading…"}
+      {ago != null ? ` · ${ago}s ago` : " · loading…"}
+      {error ? " · cached" : ""}
     </div>
   );
 }

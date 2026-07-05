@@ -52,7 +52,9 @@ async function fetchFeed(f: Feed): Promise<VehiclePosition[]> {
       tripId: null,
       latitude: lat,
       longitude: lng,
-      bearing: t.Direction === "Southbound" || t.Direction === "To Bray" ? 180 : 0,
+      // No heading in the feed — the client animator derives it from movement
+      // between fixes, which is accurate (the old 0/180 guess pointed arrows wrong).
+      bearing: null,
       speedMps: null,
       routeType: f.routeType,
       fetchedAt: new Date().toISOString(),
