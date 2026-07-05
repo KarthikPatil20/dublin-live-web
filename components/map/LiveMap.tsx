@@ -12,6 +12,7 @@ import { luasStopsToGeoJSON, luasLinesGeoJSON } from "./geojson";
 import FilterBar from "./FilterBar";
 import Legend from "./Legend";
 import VehicleSheet, { type SelectedVehicle } from "./VehicleSheet";
+import SearchSheet, { type SearchTarget } from "./SearchSheet";
 
 const VEHICLE_SRC = "vehicles";
 const LUAS_STOP_SRC = "luas-stops";
@@ -46,6 +47,7 @@ export default function LiveMap() {
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState<SelectedVehicle | null>(null);
   const [follow, setFollow] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const selectedRef = useRef<SelectedVehicle | null>(null);
   const followRef = useRef<{ id: string; since: number } | null>(null);
@@ -221,6 +223,7 @@ export default function LiveMap() {
           routeId: p.routeId,
           routeType: p.routeType as SelectedVehicle["routeType"],
           label: p.label,
+          tripId: p.tripId || null,
           lat,
           lng,
         });
@@ -385,6 +388,39 @@ export default function LiveMap() {
           .env.local to load the map.
         </div>
       )}
+      {/* Search launcher */}
+      <button
+        onClick={() => setSearchOpen(true)}
+        className="absolute right-3 top-3 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur transition-colors hover:bg-black/75"
+        aria-label="Search routes and stops"
+      >
+        🔍
+      </button>
+
+      <SearchSheet
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        onPick={(t: SearchTarget) => {
+          setSearchOpen(false);
+          const map = mapRef.current;
+          if (map) map.flyTo({ center: [t.lng, t.lat], zoom: 15, duration: 900 });
+          if (t.kind === "vehicle" && t.vehicleId) {
+            const snap = vehicleAnimator.getSnapshot(t.vehicleId);
+            if (snap) {
+              setSelected({
+                vehicleId: snap.vehicleId,
+                routeId: snap.routeId,
+                routeType: snap.routeType,
+                label: snap.label,
+                tripId: snap.tripId,
+                lat: snap.lat,
+                lng: snap.lng,
+              });
+            }
+          }
+        }}
+      />
+
       <FilterBar />
       <Legend />
       <StatusPill />

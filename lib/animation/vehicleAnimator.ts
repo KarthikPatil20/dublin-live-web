@@ -28,6 +28,7 @@ interface AnimVehicle {
   routeId: string;
   routeType: RouteType;
   label: string;
+  tripId: string | null;
   // position transition (from → to over [start, start+TRANSITION_MS])
   fromLng: number;
   fromLat: number;
@@ -53,6 +54,7 @@ export interface VehicleSnapshot {
   routeId: string;
   routeType: RouteType;
   label: string;
+  tripId: string | null;
   lat: number;
   lng: number;
   bearing: number;
@@ -95,6 +97,7 @@ class VehicleAnimator {
           routeId: fix.routeId,
           routeType: fix.routeType,
           label: fix.vehicleLabel || fix.routeId, // feed sends "" not null
+          tripId: fix.tripId ?? null,
           fromLng: fix.longitude,
           fromLat: fix.latitude,
           toLng: fix.longitude,
@@ -116,6 +119,7 @@ class VehicleAnimator {
       prev.lastSeen = now;
       prev.routeId = fix.routeId;
       prev.label = fix.vehicleLabel || fix.routeId;
+      prev.tripId = fix.tripId ?? prev.tripId;
 
       const moved = metersBetween(prev.lastFixLng, prev.lastFixLat, fix.longitude, fix.latitude);
       if (moved < 1) {
@@ -194,6 +198,7 @@ class VehicleAnimator {
           routeType: v.routeType,
           routeId: v.routeId,
           label: v.label,
+          tripId: v.tripId ?? "",
           bearing: this.bearingAt(v, now),
           hasBearing: v.hasBearing,
         },
@@ -213,6 +218,7 @@ class VehicleAnimator {
       routeId: v.routeId,
       routeType: v.routeType,
       label: v.label,
+      tripId: v.tripId,
       lat,
       lng,
       bearing: this.bearingAt(v, now),
