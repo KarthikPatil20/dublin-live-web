@@ -1,5 +1,5 @@
 import type { LuasArrival } from "@/app/api/luas/route";
-import { LUAS_STOPS } from "@/lib/luasStops";
+import { LUAS_SEGMENTS } from "@/lib/luasStops";
 
 // Vehicle GeoJSON is now produced per-frame by lib/animation/vehicleAnimator.ts.
 
@@ -27,27 +27,19 @@ export function luasStopsToGeoJSON(
   };
 }
 
-// Static line geometry built by connecting stop coordinates in order.
+// Line geometry built by connecting each ordered SEGMENT's stops. Using segments
+// (not a flat filter) keeps the Red Line's Saggart branch from zig-zagging back
+// across the trunk, and preserves true running order on both lines.
 export function luasLinesGeoJSON(): GeoJSON.FeatureCollection<GeoJSON.LineString> {
-  const red = LUAS_STOPS.filter((s) => s.line === "red").map(
-    (s) => [s.lng, s.lat] as [number, number],
-  );
-  const green = LUAS_STOPS.filter((s) => s.line === "green").map(
-    (s) => [s.lng, s.lat] as [number, number],
-  );
   return {
     type: "FeatureCollection",
-    features: [
-      {
-        type: "Feature",
-        geometry: { type: "LineString", coordinates: red },
-        properties: { line: "red" },
+    features: LUAS_SEGMENTS.map((seg) => ({
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: seg.stops.map((s) => [s.lng, s.lat] as [number, number]),
       },
-      {
-        type: "Feature",
-        geometry: { type: "LineString", coordinates: green },
-        properties: { line: "green" },
-      },
-    ],
+      properties: { line: seg.line },
+    })),
   };
 }
