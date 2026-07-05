@@ -1,5 +1,5 @@
 import type { LuasArrival } from "@/app/api/luas/route";
-import { LUAS_SEGMENTS } from "@/lib/luasStops";
+import { LUAS_TRACK } from "@/lib/luasTrack";
 
 // Vehicle GeoJSON is now produced per-frame by lib/animation/vehicleAnimator.ts.
 
@@ -27,19 +27,16 @@ export function luasStopsToGeoJSON(
   };
 }
 
-// Line geometry built by connecting each ordered SEGMENT's stops. Using segments
-// (not a flat filter) keeps the Red Line's Saggart branch from zig-zagging back
-// across the trunk, and preserves true running order on both lines.
+// Line geometry drawn along the REAL Luas track alignment (curved rail geometry
+// from OpenStreetMap), not straight stop-to-stop lines — so the route follows the
+// actual right-of-way through bends, the M50 crossing, and the Saggart branch.
 export function luasLinesGeoJSON(): GeoJSON.FeatureCollection<GeoJSON.LineString> {
   return {
     type: "FeatureCollection",
-    features: LUAS_SEGMENTS.map((seg) => ({
+    features: (["red", "green"] as const).map((line) => ({
       type: "Feature",
-      geometry: {
-        type: "LineString",
-        coordinates: seg.stops.map((s) => [s.lng, s.lat] as [number, number]),
-      },
-      properties: { line: seg.line },
+      geometry: { type: "LineString", coordinates: LUAS_TRACK[line] },
+      properties: { line },
     })),
   };
 }

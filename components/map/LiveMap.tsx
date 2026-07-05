@@ -146,38 +146,42 @@ export default function LiveMap() {
 
       // ---- Luas trams (ESTIMATED positions from arrival times, not GPS) ----
       map.addSource(LUAS_TRAM_SRC, { type: "geojson", data: emptyFC() });
+      // soft glow under each tram
       map.addLayer({
         id: "luas-tram-halo",
         type: "circle",
         source: LUAS_TRAM_SRC,
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 6, 14, 11],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 7, 14, 13],
           "circle-color": LUAS_LINE_COLOR,
-          "circle-blur": 0.8,
-          "circle-opacity": 0.28,
+          "circle-blur": 1,
+          "circle-opacity": 0.3,
         },
       });
+      // the tram silhouette (reuses veh-luasRed / veh-luasGreen icons), rotated to heading
       map.addLayer({
         id: "luas-tram",
-        type: "circle",
+        type: "symbol",
         source: LUAS_TRAM_SRC,
-        paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 6.5],
-          "circle-color": LUAS_LINE_COLOR,
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#ffffff",
+        layout: {
+          "icon-image": ["match", ["get", "line"], "red", "veh-luasRed", "veh-luasGreen"],
+          "icon-rotate": ["get", "bearing"],
+          "icon-rotation-alignment": "map",
+          "icon-size": ["interpolate", ["linear"], ["zoom"], 9, 0.4, 12, 0.6, 16, 0.95],
+          "icon-allow-overlap": true,
+          "icon-ignore-placement": true,
         },
       });
       map.addLayer({
         id: "luas-tram-label",
         type: "symbol",
         source: LUAS_TRAM_SRC,
-        minzoom: 12.5,
+        minzoom: 12,
         layout: {
-          "text-field": ["concat", "🚊 ", ["get", "label"]],
+          "text-field": ["get", "label"],
           "text-size": 10,
-          "text-offset": [0, -1.4],
-          "text-anchor": "bottom",
+          "text-offset": [0, 1.5],
+          "text-anchor": "top",
           "text-optional": true,
         },
         paint: {
