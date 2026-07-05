@@ -130,27 +130,68 @@ function drawTram(color: string): ImageData {
   return ctx.getImageData(0, 0, SIZE, SIZE);
 }
 
-/** Plain puck for vehicles with no heading yet. */
-function drawDot(color: string): ImageData {
-  const ctx = makeCanvas(DOT_SIZE);
+/**
+ * Animated beacon for vehicles with no heading yet: a breathing core with an
+ * expanding "signal" ring in the livery color. Uses Mapbox's animated-image
+ * API (StyleImageInterface) — render() redraws the canvas every frame.
+ */
+function pulsingBeacon(map: mapboxgl.Map, color: string): mapboxgl.StyleImageInterface {
+  const period = 1_700; // ms per pulse
   const c = DOT_SIZE / 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = DOT_SIZE;
+  canvas.height = DOT_SIZE;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
 
-  withShadow(ctx, () => {
-    ctx.beginPath();
-    ctx.arc(c, c, 16, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-  });
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = "#ffffff";
-  ctx.stroke();
+  return {
+    width: DOT_SIZE,
+    height: DOT_SIZE,
+    data: new Uint8ClampedArray(DOT_SIZE * DOT_SIZE * 4),
+    render() {
+      const t = (performance.now() % period) / period;
+      ctx.clearRect(0, 0, DOT_SIZE, DOT_SIZE);
 
-  ctx.beginPath();
-  ctx.arc(c, c, 4.5, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.92)";
-  ctx.fill();
+      // expanding signal ring, fading as it grows
+      ctx.beginPath();
+      ctx.arc(c, c, 13 + t * 16, 0, Math.PI * 2);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3.5;
+      ctx.globalAlpha = 0.55 * (1 - t);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
 
-  return ctx.getImageData(0, 0, DOT_SIZE, DOT_SIZE);
+      // soft halo
+      ctx.beginPath();
+      ctx.arc(c, c, 15, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.16;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // breathing core
+      const r = 11 + Math.sin(t * Math.PI * 2) * 1.3;
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = 5;
+      ctx.shadowOffsetY = 2;
+      ctx.beginPath();
+      ctx.arc(c, c, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.shadowColor = "transparent";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "#ffffff";
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(c, c, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fill();
+
+      this.data = ctx.getImageData(0, 0, DOT_SIZE, DOT_SIZE).data;
+      map.triggerRepaint();
+      return true; // image changed — upload this frame
+    },
+  };
 }
 
 const SILHOUETTE: Record<RouteType, (color: string) => ImageData> = {
@@ -169,7 +210,7 @@ export function addVehicleIcons(map: mapboxgl.Map): void {
       map.addImage(`veh-${t}`, SILHOUETTE[t](color), { pixelRatio: 2 });
     }
     if (!map.hasImage(`dot-${t}`)) {
-      map.addImage(`dot-${t}`, drawDot(color), { pixelRatio: 2 });
+      map.addImage(`dot-${t}`, pulsingBeacon(map, color), { pixelRatio: 2 });
     }
   }
 }

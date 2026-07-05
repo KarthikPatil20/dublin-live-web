@@ -143,6 +143,19 @@ export default function LiveMap() {
       // ---- Vehicles ----
       map.addSource(VEHICLE_SRC, { type: "geojson", data: emptyFC() });
 
+      // Soft breathing glow under every vehicle — opacity animated in the frame loop
+      map.addLayer({
+        id: "vehicle-glow",
+        type: "circle",
+        source: VEHICLE_SRC,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 7, 12, 11, 16, 20],
+          "circle-color": COLOR_EXPR,
+          "circle-blur": 1,
+          "circle-opacity": 0.2,
+        },
+      });
+
       // Pulse halo under the selected vehicle — animated in the frame loop
       map.addLayer({
         id: "vehicle-pulse",
@@ -276,6 +289,12 @@ export default function LiveMap() {
         vehicleAnimator.frame(now),
       );
 
+      // Gentle breathing glow under the whole fleet (slower than the pulses).
+      if (map.getLayer("vehicle-glow")) {
+        const breath = 0.5 + 0.5 * Math.sin((now / 2_400) * Math.PI * 2);
+        map.setPaintProperty("vehicle-glow", "circle-opacity", 0.14 + 0.1 * breath);
+      }
+
       // Shared pulse phase drives both "signal" layers.
       const phase = (now % PULSE_MS) / PULSE_MS; // 0 → 1
       if (map.getLayer("vehicle-pulse")) {
@@ -343,7 +362,7 @@ export default function LiveMap() {
       ["get", "routeType"],
       ["literal", visible],
     ];
-    ["vehicle-icon", "vehicle-label"].forEach((id) => {
+    ["vehicle-icon", "vehicle-label", "vehicle-glow"].forEach((id) => {
       if (map.getLayer(id)) map.setFilter(id, typeFilter);
     });
     const luasOn = enabled.luasRed || enabled.luasGreen;
