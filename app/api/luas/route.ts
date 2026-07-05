@@ -12,6 +12,12 @@ export const revalidate = 0;
 
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
+export interface LuasTram {
+  dueMins: number; // 0 = DUE
+  direction: "inbound" | "outbound"; // toward city / away from city
+  destination: string;
+}
+
 export interface LuasArrival {
   code: string;
   name: string;
@@ -20,6 +26,7 @@ export interface LuasArrival {
   line: "red" | "green";
   nextDueMins: number | null; // soonest tram either direction
   destination: string | null;
+  trams: LuasTram[]; // all forecast trams at this stop (both directions)
 }
 
 function forecastUrl(code: string) {
@@ -35,6 +42,7 @@ async function fetchStop(stop: (typeof LUAS_STOPS)[number]): Promise<LuasArrival
     line: stop.line,
     nextDueMins: null,
     destination: null,
+    trams: [],
   };
   try {
     const res = await fetch(forecastUrl(stop.code), {
@@ -47,18 +55,28 @@ async function fetchStop(stop: (typeof LUAS_STOPS)[number]): Promise<LuasArrival
     const dirs = Array.isArray(directions) ? directions : directions ? [directions] : [];
     let soonest: number | null = null;
     let dest: string | null = null;
+    const trams: LuasTram[] = [];
     for (const d of dirs) {
-      const trams = Array.isArray(d.tram) ? d.tram : d.tram ? [d.tram] : [];
-      for (const tram of trams) {
+      // <direction name="Inbound"> / "Outbound"
+      const dirName = String(d["@_name"] ?? "").toLowerCase();
+      const direction: LuasTram["direction"] = dirName.includes("out") ? "outbound" : "inbound";
+      const list = Array.isArray(d.tram) ? d.tram : d.tram ? [d.tram] : [];
+      for (const tram of list) {
         const due = tram["@_dueMins"];
         const mins = due === "DUE" ? 0 : Number(due);
-        if (Number.isFinite(mins) && (soonest === null || mins < soonest)) {
+        if (!Number.isFinite(mins)) continue;
+        const destination = String(tram["@_destination"] ?? "");
+        // The feed emits a placeholder row with dueMins="0" when no tram is running;
+        // skip those so they don't become phantom trams on the map.
+        if (!destination || /no tram/i.test(destination)) continue;
+        trams.push({ dueMins: mins, direction, destination });
+        if (soonest === null || mins < soonest) {
           soonest = mins;
-          dest = tram["@_destination"] ?? null;
+          dest = destination;
         }
       }
     }
-    return { ...base, nextDueMins: soonest, destination: dest };
+    return { ...base, nextDueMins: soonest, destination: dest, trams };
   } catch {
     return base;
   }
@@ -75,6 +93,7 @@ export async function GET() {
           ...LUAS_STOPS[i],
           nextDueMins: null,
           destination: null,
+          trams: [],
         },
   );
   return NextResponse.json({ stops });

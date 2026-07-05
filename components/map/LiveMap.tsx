@@ -9,6 +9,7 @@ import { ROUTE_COLORS } from "@/types/vehicle";
 import { vehicleAnimator } from "@/lib/animation/vehicleAnimator";
 import { addVehicleIcons } from "@/lib/mapIcons";
 import { luasStopsToGeoJSON, luasLinesGeoJSON } from "./geojson";
+import { synthesiseTrams, tramsToGeoJSON } from "@/lib/luasTrams";
 import FilterBar from "./FilterBar";
 import Legend from "./Legend";
 import VehicleSheet, { type SelectedVehicle } from "./VehicleSheet";
@@ -17,6 +18,7 @@ import SearchSheet, { type SearchTarget } from "./SearchSheet";
 const VEHICLE_SRC = "vehicles";
 const LUAS_STOP_SRC = "luas-stops";
 const LUAS_LINE_SRC = "luas-lines";
+const LUAS_TRAM_SRC = "luas-trams";
 
 const FRAME_MS = 33; // ~30fps — plenty for marker motion, kind to batteries
 const PULSE_MS = 1_600; // period of the "signal" pulse rings
@@ -137,6 +139,49 @@ export default function LiveMap() {
         },
         paint: {
           "text-color": "#c9d1d9",
+          "text-halo-color": "#0D1117",
+          "text-halo-width": 1.2,
+        },
+      });
+
+      // ---- Luas trams (ESTIMATED positions from arrival times, not GPS) ----
+      map.addSource(LUAS_TRAM_SRC, { type: "geojson", data: emptyFC() });
+      map.addLayer({
+        id: "luas-tram-halo",
+        type: "circle",
+        source: LUAS_TRAM_SRC,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 6, 14, 11],
+          "circle-color": LUAS_LINE_COLOR,
+          "circle-blur": 0.8,
+          "circle-opacity": 0.28,
+        },
+      });
+      map.addLayer({
+        id: "luas-tram",
+        type: "circle",
+        source: LUAS_TRAM_SRC,
+        paint: {
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 14, 6.5],
+          "circle-color": LUAS_LINE_COLOR,
+          "circle-stroke-width": 2,
+          "circle-stroke-color": "#ffffff",
+        },
+      });
+      map.addLayer({
+        id: "luas-tram-label",
+        type: "symbol",
+        source: LUAS_TRAM_SRC,
+        minzoom: 12.5,
+        layout: {
+          "text-field": ["concat", "🚊 ", ["get", "label"]],
+          "text-size": 10,
+          "text-offset": [0, -1.4],
+          "text-anchor": "bottom",
+          "text-optional": true,
+        },
+        paint: {
+          "text-color": "#E6EDF3",
           "text-halo-color": "#0D1117",
           "text-halo-width": 1.2,
         },
@@ -265,8 +310,14 @@ export default function LiveMap() {
     if (!ready) return;
     const push = (vehicles: Parameters<typeof vehicleAnimator.setData>[0], luas: unknown) => {
       vehicleAnimator.setData(vehicles);
-      (mapRef.current?.getSource(LUAS_STOP_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
-        luasStopsToGeoJSON(luas as Parameters<typeof luasStopsToGeoJSON>[0]),
+      const stops = luas as Parameters<typeof luasStopsToGeoJSON>[0];
+      const map = mapRef.current;
+      (map?.getSource(LUAS_STOP_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        luasStopsToGeoJSON(stops),
+      );
+      // synthesise estimated tram positions along the track from arrival times
+      (map?.getSource(LUAS_TRAM_SRC) as mapboxgl.GeoJSONSource | undefined)?.setData(
+        tramsToGeoJSON(synthesiseTrams(stops)),
       );
     };
     const unsub = useVehiclesStore.subscribe((s) => push(s.vehicles, s.luasStops));
@@ -368,13 +419,32 @@ export default function LiveMap() {
     ["vehicle-icon", "vehicle-label", "vehicle-glow"].forEach((id) => {
       if (map.getLayer(id)) map.setFilter(id, typeFilter);
     });
-    const luasOn = enabled.luasRed || enabled.luasGreen;
-    ["luas-line-casing", "luas-line", "luas-stop", "luas-stop-pulse", "luas-stop-label"].forEach(
-      (id) => {
-        if (map.getLayer(id))
-          map.setLayoutProperty(id, "visibility", luasOn ? "visible" : "none");
-      },
-    );
+    // Luas: filter each line independently by its `line` property, so "Luas Red
+    // only" hides the Green line (and vice-versa) instead of the old all-or-nothing.
+    const luasLines: string[] = [];
+    if (enabled.luasRed) luasLines.push("red");
+    if (enabled.luasGreen) luasLines.push("green");
+    const anyLuas = luasLines.length > 0;
+    const lineFilter: mapboxgl.Expression = ["in", ["get", "line"], ["literal", luasLines]];
+    [
+      "luas-line-casing",
+      "luas-line",
+      "luas-stop",
+      "luas-stop-pulse",
+      "luas-stop-label",
+      "luas-tram-halo",
+      "luas-tram",
+      "luas-tram-label",
+    ].forEach((id) => {
+      if (!map.getLayer(id)) return;
+      map.setLayoutProperty(id, "visibility", anyLuas ? "visible" : "none");
+      // preserve the pulse layer's own "imminent" filter; combine with the line filter
+      if (id === "luas-stop-pulse") {
+        map.setFilter(id, ["all", ["==", ["get", "imminent"], true], lineFilter]);
+      } else {
+        map.setFilter(id, lineFilter);
+      }
+    });
   }, [enabled, ready]);
 
   const noToken = !process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
